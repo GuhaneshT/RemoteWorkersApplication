@@ -21,6 +21,34 @@ func generateJWT(username string) (string, error) {
 	return token.SignedString(jwtSecret)
 }
 
+// JWT middleware to protect routes
+func jwtMiddleware(c *fiber.Ctx) error {
+	token := c.Get("Authorization")
+	if token == "" {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Missing or invalid token"})
+	}
+
+	// Parse the token
+	parsedToken, err := jwt.Parse(token, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fiber.ErrUnauthorized
+		}
+		return jwtSecret, nil
+	})
+
+	if err != nil || !parsedToken.Valid {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid token"})
+	}
+	// add username to context
+	if claims, ok := parsedToken.Claims.(jwt.MapClaims); ok && parsedToken.Valid {
+		c.Locals("username", claims["username"])
+	} else {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid token"})
+	}
+
+	return c.Next()
+}
+
 // User struct to hold user data
 type User struct {
 	Username string
@@ -32,7 +60,7 @@ type User struct {
 // Dummy user store
 var users = map[string]User{
 	"rajini": {Username: "rajini", Password: "password123", Email: "rajini@example.com", Score: 120},
-	"kamal":   {Username: "kamal", Password: "qwerty456", Email: "kamal@example.com", Score: 95},
+	"kamal":  {Username: "kamal", Password: "qwerty456", Email: "kamal@example.com", Score: 95},
 }
 
 // Main app
@@ -44,7 +72,8 @@ func main() {
 
 	app.Post("/api/login", loginHandler)
 	app.Post("/api/signin", signinHandler)
-	app.Post("/api/change-username-password", changeUsernamePasswordHandler)
+	app.Post("/api/change-username-password", jwtMiddleware, changeUsernamePasswordHandler)
+	app.Get("/api/user", jwtMiddleware, getUserDetails)
 
 	app.Listen(":8080")
 }
@@ -62,7 +91,7 @@ func loginHandler(c *fiber.Ctx) error {
 
 	user, ok := users[body.Username]
 	if !ok || user.Password != body.Password {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid credentials"})
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid credentials", "ok": user})
 	}
 
 	token, err := generateJWT(user.Username)
@@ -116,8 +145,24 @@ func signinHandler(c *fiber.Ctx) error {
 	})
 }
 
+func getUserDetails(c *fiber.Ctx) error {
+	username := c.Locals("username").(string)
+
+	user, ok := users[username]
+	if !ok {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User not found"})
+	}
+
+	return c.JSON(fiber.Map{
+		"username": user.Username,
+		"email":    user.Email,
+		"score":    user.Score,
+	})
+}
+
 // Change Username and Password Handler
 func changeUsernamePasswordHandler(c *fiber.Ctx) error {
+
 	var body struct {
 		Username    string `json:"username"`
 		Password    string `json:"password"`
